@@ -62,21 +62,25 @@ export class ProxyEngineChrome {
 		let resultCurrentProxyServer = this.convertActiveProxyServer(settingsActive.currentProxyServer);
 
 		let compiledRules = settingsActive.activeProfile.compiledRules;
-		let compiledRules_WhitelistRules = this.regexHostArrayToString(compiledRules.WhitelistRules).join(",");
-		let compiledRules_Rules = this.regexHostArrayToString(compiledRules.Rules).join(",");
-		let compiledRules_WhitelistSubscriptionRules = this.regexHostArrayToString(compiledRules.WhitelistSubscriptionRules).join(",");
-		let compiledRules_SubscriptionRules = this.regexHostArrayToString(compiledRules.SubscriptionRules).join(",");
+
+		// Generate optimized data structures
+		const optimizedData = this.generateOptimizedStructures(compiledRules);
 
 		let pacTemplateString = `
+// Optimized HashMaps for O(1) lookups
+const exactDomainMap = ${optimizedData.exactDomainMap};
+const exactUrlMap = ${optimizedData.exactUrlMap};
+const domainPathMap = ${optimizedData.domainPathMap};
+
 const compiledRules = {
-	/** User defined whitelist rules. P2 */
-	WhitelistRules: [${compiledRules_WhitelistRules}],
-	/** User defined rules. P1 */
-	Rules: [${compiledRules_Rules}],
+	/** User defined whitelist rules. P2 - only regex rules now */
+	WhitelistRules: [${optimizedData.whitelistRules}],
+	/** User defined rules. P1 - only regex rules now */
+	Rules: [${optimizedData.rules}],
 	/** Subscription whitelist rules. P3  */
-	WhitelistSubscriptionRules: [${compiledRules_WhitelistSubscriptionRules}],
+	WhitelistSubscriptionRules: [${optimizedData.whitelistSubscriptionRules}],
 	/** Subscription rules. P4 */
-	SubscriptionRules: [${compiledRules_SubscriptionRules}]
+	SubscriptionRules: [${optimizedData.subscriptionRules}]
 };
 const SmartProfileType = {
 	Direct: ${SmartProfileType.Direct},
@@ -123,6 +127,23 @@ function FindProxyForURL(url, host, noDiagnostics) {
 
 	// correcting 'host' because it doesn't include port number
 	const hostAndPort = extractHostFromUrl(url)?.toLowerCase() || host;
+
+	// FAST PATH: O(1) exact domain lookup
+	const exactDomainMatch = exactDomainMap[host] || exactDomainMap[hostAndPort];
+	if (exactDomainMatch) return currentProxyServer;
+
+	// FAST PATH: O(1) exact URL lookup
+	const lowerUrl = url.toLowerCase();
+	const exactUrlMatch = exactUrlMap[lowerUrl];
+	if (exactUrlMatch) return currentProxyServer;
+
+	// FAST PATH: O(k) domain+path prefix check
+	const schemaLessUrl = removeSchemaFromUrl(lowerUrl);
+	if (schemaLessUrl) {
+		for (const prefix in domainPathMap) {
+			if (schemaLessUrl.startsWith(prefix)) return currentProxyServer;
+		}
+	}
 
 	if (activeProfileType == SmartProfileType.AlwaysEnabledBypassRules) {
 
@@ -458,5 +479,68 @@ function extractHostFromUrl(url) {
 			}
 		}
 		return compiledRulesAsStringArray;
+	}
+
+	/** Generate optimized HashMaps and filtered regex rules for PAC script */
+	private static generateOptimizedStructures(compiledRules: any): {
+		exactDomainMap: string;
+		exactUrlMap: string;
+		domainPathMap: string;
+		whitelistRules: string;
+		rules: string;
+		whitelistSubscriptionRules: string;
+		subscriptionRules: string;
+	} {
+		const exactDomainMap: { [key: string]: string } = {};
+		const exactUrlMap: { [key: string]: string } = {};
+		const domainPathMap: { [key: string]: string } = {};
+
+		// Filter to only include regex rules (others go to HashMaps)
+		const filterRegexRules = (rules: CompiledProxyRule[]): CompiledProxyRule[] => {
+			return rules.filter(rule => {
+				switch (rule.compiledRuleType) {
+					case CompiledProxyRuleType.SearchDomain:
+						if (rule.search) {
+							exactDomainMap[rule.search] = rule.proxy ? this.convertActiveProxyServer(rule.proxy) : 'proxy';
+						}
+						return false; // Remove from array
+					case CompiledProxyRuleType.Exact:
+						if (rule.search) {
+							exactUrlMap[rule.search] = rule.proxy ? this.convertActiveProxyServer(rule.proxy) : 'proxy';
+						}
+						return false;
+					case CompiledProxyRuleType.SearchDomainAndPath:
+					case CompiledProxyRuleType.SearchDomainSubdomainAndPath:
+						if (rule.search) {
+							domainPathMap[rule.search] = rule.proxy ? this.convertActiveProxyServer(rule.proxy) : 'proxy';
+						}
+						return false;
+					case CompiledProxyRuleType.SearchDomainSubdomain:
+						// Add to exact domain map for exact matches
+						if (rule.search) {
+							exactDomainMap[rule.search] = rule.proxy ? this.convertActiveProxyServer(rule.proxy) : 'proxy';
+						}
+						// Keep for subdomain matching via regex-like pattern
+						return true;
+					default:
+						return true; // Keep regex rules
+				}
+			});
+		};
+
+		const whitelistRules = this.regexHostArrayToString(filterRegexRules(compiledRules.WhitelistRules || [])).join(",");
+		const rules = this.regexHostArrayToString(filterRegexRules(compiledRules.Rules || [])).join(",");
+		const whitelistSubscriptionRules = this.regexHostArrayToString(filterRegexRules(compiledRules.WhitelistSubscriptionRules || [])).join(",");
+		const subscriptionRules = this.regexHostArrayToString(filterRegexRules(compiledRules.SubscriptionRules || [])).join(",");
+
+		return {
+			exactDomainMap: JSON.stringify(exactDomainMap),
+			exactUrlMap: JSON.stringify(exactUrlMap),
+			domainPathMap: JSON.stringify(domainPathMap),
+			whitelistRules,
+			rules,
+			whitelistSubscriptionRules,
+			subscriptionRules
+		};
 	}
 }
