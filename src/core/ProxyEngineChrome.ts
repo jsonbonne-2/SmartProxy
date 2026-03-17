@@ -71,6 +71,8 @@ export class ProxyEngineChrome {
 const exactDomainMap = ${optimizedData.exactDomainMap};
 const exactUrlMap = ${optimizedData.exactUrlMap};
 const domainPathMap = ${optimizedData.domainPathMap};
+// Subdomain suffix map for O(k) subdomain matching
+const subdomainSuffixMap = ${optimizedData.subdomainSuffixMap};
 
 const compiledRules = {
 	/** User defined whitelist rules. P2 - only regex rules now */
@@ -142,6 +144,28 @@ function FindProxyForURL(url, host, noDiagnostics) {
 	if (schemaLessUrl) {
 		for (const prefix in domainPathMap) {
 			if (schemaLessUrl.startsWith(prefix)) return currentProxyServer;
+		}
+	}
+
+	// FAST PATH: O(k) subdomain suffix check
+	// Check if host or any parent domain has a subdomain rule
+	const dotIndex = host.indexOf('.');
+	if (dotIndex > 0) {
+		// Check all parent domains: api.kimi.com -> .kimi.com, .com
+		let suffix = host.substring(dotIndex); // .kimi.com
+		if (subdomainSuffixMap[suffix]) return currentProxyServer;
+		const nextDot = suffix.indexOf('.', 1);
+		if (nextDot > 0) {
+			suffix = suffix.substring(nextDot); // .com
+			if (subdomainSuffixMap[suffix]) return currentProxyServer;
+		}
+	}
+	// Also check with port
+	if (host != hostAndPort) {
+		const portDotIndex = hostAndPort.indexOf('.');
+		if (portDotIndex > 0) {
+			let suffix = hostAndPort.substring(portDotIndex);
+			if (subdomainSuffixMap[suffix]) return currentProxyServer;
 		}
 	}
 
@@ -486,6 +510,7 @@ function extractHostFromUrl(url) {
 		exactDomainMap: string;
 		exactUrlMap: string;
 		domainPathMap: string;
+		subdomainSuffixMap: string;
 		whitelistRules: string;
 		rules: string;
 		whitelistSubscriptionRules: string;
@@ -494,6 +519,7 @@ function extractHostFromUrl(url) {
 		const exactDomainMap: { [key: string]: string } = {};
 		const exactUrlMap: { [key: string]: string } = {};
 		const domainPathMap: { [key: string]: string } = {};
+		const subdomainSuffixMap: { [key: string]: string } = {};
 
 		// Filter to only include regex rules (others go to HashMaps)
 		const filterRegexRules = (rules: CompiledProxyRule[]): CompiledProxyRule[] => {
@@ -519,9 +545,11 @@ function extractHostFromUrl(url) {
 						// Add to exact domain map for exact matches
 						if (rule.search) {
 							exactDomainMap[rule.search] = rule.proxy ? this.convertActiveProxyServer(rule.proxy) : 'proxy';
+							// Add suffix for subdomain matching: kimi.com -> .kimi.com
+							subdomainSuffixMap['.' + rule.search] = rule.proxy ? this.convertActiveProxyServer(rule.proxy) : 'proxy';
 						}
-						// Keep for subdomain matching via regex-like pattern
-						return true;
+						// No longer need to keep in array - suffix map handles subdomains
+						return false;
 					default:
 						return true; // Keep regex rules
 				}
@@ -537,6 +565,7 @@ function extractHostFromUrl(url) {
 			exactDomainMap: JSON.stringify(exactDomainMap),
 			exactUrlMap: JSON.stringify(exactUrlMap),
 			domainPathMap: JSON.stringify(domainPathMap),
+			subdomainSuffixMap: JSON.stringify(subdomainSuffixMap),
 			whitelistRules,
 			rules,
 			whitelistSubscriptionRules,
