@@ -284,6 +284,7 @@ export class ProxyRules {
 				matchedRuleSource: CompiledProxyRulesMatchedSource.WhitelistRules
 			};
 			ProxyRules.addToCache(cacheKey, result);
+			ProxyRules.updateDomainCaches(searchUrl, userWhitelistMatchedRule);
 			return result;
 		}
 
@@ -295,6 +296,7 @@ export class ProxyRules {
 				matchedRuleSource: CompiledProxyRulesMatchedSource.Rules
 			};
 			ProxyRules.addToCache(cacheKey, result);
+			ProxyRules.updateDomainCaches(searchUrl, userMatchedRule);
 			return result;
 		}
 
@@ -306,6 +308,7 @@ export class ProxyRules {
 				matchedRuleSource: CompiledProxyRulesMatchedSource.WhitelistSubscriptionRules
 			};
 			ProxyRules.addToCache(cacheKey, result);
+			ProxyRules.updateDomainCaches(searchUrl, subWhitelistMatchedRule);
 			return result;
 		}
 
@@ -317,12 +320,47 @@ export class ProxyRules {
 				matchedRuleSource: CompiledProxyRulesMatchedSource.SubscriptionRules
 			};
 			ProxyRules.addToCache(cacheKey, result);
+			ProxyRules.updateDomainCaches(searchUrl, subMatchedRule);
 			return result;
 		}
 
 		// Cache negative result (no match)
 		ProxyRules.addToCache(cacheKey, null);
+		ProxyRules.updateDomainCaches(searchUrl, null);
 		return null;
+	}
+
+	/** Update domain caches after all rule sets have been checked */
+	private static updateDomainCaches(searchUrl: string, matchedRule: CompiledProxyRule | null) {
+		let lowerCaseUrl = searchUrl.toLowerCase();
+		let domainHostLowerCase = Utils.extractHostNameFromUrl(lowerCaseUrl);
+
+		// Only cache simple domain results, not port-specific
+		if (!domainHostLowerCase || domainHostLowerCase.includes(':')) {
+			return;
+		}
+
+		if (matchedRule) {
+			// Check if this is a subdomain rule - if so, cache the base domain
+			if (matchedRule.compiledRuleType === CompiledProxyRuleType.SearchDomainSubdomain ||
+				matchedRule.compiledRuleType === CompiledProxyRuleType.SearchDomainSubdomainAndPath) {
+				Debug.log(`[Cache] Add PROXY base domain: ${matchedRule.search} (for ${domainHostLowerCase})`);
+				ProxyRules.addToKnownProxyBaseDomains(matchedRule.search);
+			} else {
+				Debug.log(`[Cache] Add PROXY domain: ${domainHostLowerCase}`);
+				ProxyRules.addToKnownProxyDomains(domainHostLowerCase);
+			}
+		} else {
+			// No match - cache the exact domain and also extract base domain
+			Debug.log(`[Cache] Add NO_PROXY domain: ${domainHostLowerCase}`);
+			ProxyRules.addToKnownNoProxyDomains(domainHostLowerCase);
+			// Cache base domain for subdomain rules (prevents checking all subdomains)
+			let baseDomain = ProxyRules.extractBaseDomain(domainHostLowerCase);
+			if (baseDomain && baseDomain !== domainHostLowerCase) {
+				Debug.log(`[Cache] Add NO_PROXY base domain: ${baseDomain}`);
+				ProxyRules.addToKnownNoProxyBaseDomains(baseDomain);
+			}
+		}
 	}
 
 	/** Add result to cache with size limit */
@@ -494,6 +532,7 @@ export class ProxyRules {
 			if (domainHostLowerCase) {
 				if (ProxyRules.knownNoProxyDomains.has(domainHostLowerCase)) {
 					// Domain confirmed to not need proxy, skip all rule matching
+					Debug.log(`[FastPath] NO_PROXY exact match: ${domainHostLowerCase}`);
 					if (cacheKey.length < 500) {
 						ProxyRules.addSingleRuleToCache(cacheKey, null, rules);
 					}
@@ -501,6 +540,7 @@ export class ProxyRules {
 				}
 				// Check if domain is a subdomain of a known no-proxy base domain
 				if (ProxyRules.isSubdomainOfAny(domainHostLowerCase, ProxyRules.knownNoProxyBaseDomains)) {
+					Debug.log(`[FastPath] NO_PROXY subdomain match: ${domainHostLowerCase}`);
 					if (cacheKey.length < 500) {
 						ProxyRules.addSingleRuleToCache(cacheKey, null, rules);
 					}
@@ -515,6 +555,7 @@ export class ProxyRules {
 			if (domainHostLowerCase) {
 				if (ProxyRules.knownProxyDomains.has(domainHostLowerCase)) {
 					// Domain confirmed to use proxy, find the matching rule quickly
+					Debug.log(`[FastPath] PROXY exact match: ${domainHostLowerCase}`);
 					let domainMatch = ProxyRules.exactDomainMap.get(domainHostLowerCase);
 					if (domainMatch) {
 						result = domainMatch;
@@ -523,6 +564,7 @@ export class ProxyRules {
 					}
 				} else if (ProxyRules.isSubdomainOfAny(domainHostLowerCase, ProxyRules.knownProxyBaseDomains)) {
 					// Domain is a subdomain of a known proxy base domain
+					Debug.log(`[FastPath] PROXY subdomain match: ${domainHostLowerCase}`);
 					result = ProxyRules.searchDomainInTrie(domainHostLowerCase);
 				}
 			}
@@ -642,26 +684,8 @@ export class ProxyRules {
 			ProxyRules.addSingleRuleToCache(cacheKey, result, rules);
 		}
 
-		// Update domain caches for fast-path lookups (only cache simple domain results, not port-specific)
-		if (domainHostLowerCase && !domainHostLowerCase.includes(':')) {
-			if (result) {
-				// Check if this is a subdomain rule - if so, cache the base domain
-				if (result.compiledRuleType === CompiledProxyRuleType.SearchDomainSubdomain ||
-					result.compiledRuleType === CompiledProxyRuleType.SearchDomainSubdomainAndPath) {
-					ProxyRules.addToKnownProxyBaseDomains(result.search);
-				} else {
-					ProxyRules.addToKnownProxyDomains(domainHostLowerCase);
-				}
-			} else {
-				// No match - cache the exact domain and also extract base domain
-				ProxyRules.addToKnownNoProxyDomains(domainHostLowerCase);
-				// Cache base domain for subdomain rules (prevents checking all subdomains)
-				let baseDomain = ProxyRules.extractBaseDomain(domainHostLowerCase);
-				if (baseDomain && baseDomain !== domainHostLowerCase) {
-					ProxyRules.addToKnownNoProxyBaseDomains(baseDomain);
-				}
-			}
-		}
+		// NOTE: Domain cache updates moved to findMatchedUrlInRulesInfo to avoid
+		// incorrect caching when checking multiple rule sets sequentially
 
 		return result;
 	}
