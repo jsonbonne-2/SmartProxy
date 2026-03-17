@@ -53,6 +53,13 @@ export class ProxyRules {
 	/** Current rules reference for cache invalidation */
 	private static currentRulesRef: CompiledProxyRule[] | null = null;
 
+	/** Fast-path cache: domains confirmed to use proxy - O(1) positive lookup */
+	private static knownProxyDomains: Set<string> = new Set();
+	/** Fast-path cache: domains confirmed to NOT use proxy - O(1) negative lookup (bloom filter style) */
+	private static knownNoProxyDomains: Set<string> = new Set();
+	/** Max size for domain caches */
+	private static readonly MAX_DOMAIN_CACHE_SIZE = 5000;
+
 	public static compileRules(profile: SmartProfileBase, proxyRules: ProxyRule[]): {
 		compiledList: CompiledProxyRule[],
 		compiledWhiteList: CompiledProxyRule[]
@@ -335,6 +342,9 @@ export class ProxyRules {
 	public static clearMatchCache() {
 		ProxyRules.urlMatchCache.clear();
 		ProxyRules.singleRuleMatchCache.clear();
+		// Clear fast-path domain caches
+		ProxyRules.knownProxyDomains.clear();
+		ProxyRules.knownNoProxyDomains.clear();
 		// Clear optimized data structures
 		ProxyRules.domainTrie = new DomainTrieNode();
 		ProxyRules.exactUrlMap.clear();
@@ -467,22 +477,45 @@ export class ProxyRules {
 		}
 
 		let result: CompiledProxyRule | null = null;
-		let domainHostLowerCase: string;
+		let domainHostLowerCase: string = null;
 		let schemaLessUrlLowerCase: string;
 
 		try {
+			// Extract host early for fast-path checks
+			domainHostLowerCase = Utils.extractHostNameFromUrl(lowerCaseUrl);
+
+			// FAST PATH 1: O(1) check if domain is known to NOT need proxy
+			if (domainHostLowerCase && ProxyRules.knownNoProxyDomains.has(domainHostLowerCase)) {
+				// Domain confirmed to not need proxy, skip all rule matching
+				// Still cache the result for this specific URL
+				if (cacheKey.length < 500) {
+					ProxyRules.addSingleRuleToCache(cacheKey, null, rules);
+				}
+				return null;
+			}
+
 			// Build optimized structures if needed
 			ProxyRules.buildOptimizedStructures(rules);
 
-			// O(1) exact URL match check
-			let exactMatch = ProxyRules.exactUrlMap.get(lowerCaseUrl);
-			if (exactMatch) {
-				result = exactMatch;
+			// FAST PATH 2: O(1) check if domain is known to use proxy
+			if (domainHostLowerCase && ProxyRules.knownProxyDomains.has(domainHostLowerCase)) {
+				// Domain confirmed to use proxy, find the matching rule quickly
+				// Check exact domain match first
+				let domainMatch = ProxyRules.exactDomainMap.get(domainHostLowerCase);
+				if (domainMatch) {
+					result = domainMatch;
+				} else {
+					// Try trie for subdomain match
+					result = ProxyRules.searchDomainInTrie(domainHostLowerCase);
+				}
 			}
 
-			// Extract host once for domain-based lookups
+			// O(1) exact URL match check
 			if (!result) {
-				domainHostLowerCase = Utils.extractHostNameFromUrl(lowerCaseUrl);
+				let exactMatch = ProxyRules.exactUrlMap.get(lowerCaseUrl);
+				if (exactMatch) {
+					result = exactMatch;
+				}
 			}
 
 			// O(1) exact domain match check
@@ -591,6 +624,16 @@ export class ProxyRules {
 		if (cacheKey.length < 500) {
 			ProxyRules.addSingleRuleToCache(cacheKey, result, rules);
 		}
+
+		// Update domain caches for fast-path lookups (only cache simple domain results, not port-specific)
+		if (domainHostLowerCase && !domainHostLowerCase.includes(':')) {
+			if (result) {
+				ProxyRules.addToKnownProxyDomains(domainHostLowerCase);
+			} else {
+				ProxyRules.addToKnownNoProxyDomains(domainHostLowerCase);
+			}
+		}
+
 		return result;
 	}
 
@@ -606,6 +649,30 @@ export class ProxyRules {
 			}
 		}
 		ProxyRules.singleRuleMatchCache.set(key, { rule, rulesRef });
+	}
+
+	/** Add domain to known proxy domains cache with size limit */
+	private static addToKnownProxyDomains(domain: string) {
+		if (ProxyRules.knownProxyDomains.size >= ProxyRules.MAX_DOMAIN_CACHE_SIZE) {
+			// Clear half the cache when full
+			const entries = Array.from(ProxyRules.knownProxyDomains);
+			for (let i = 0; i < entries.length / 2; i++) {
+				ProxyRules.knownProxyDomains.delete(entries[i]);
+			}
+		}
+		ProxyRules.knownProxyDomains.add(domain);
+	}
+
+	/** Add domain to known no-proxy domains cache with size limit */
+	private static addToKnownNoProxyDomains(domain: string) {
+		if (ProxyRules.knownNoProxyDomains.size >= ProxyRules.MAX_DOMAIN_CACHE_SIZE) {
+			// Clear half the cache when full
+			const entries = Array.from(ProxyRules.knownNoProxyDomains);
+			for (let i = 0; i < entries.length / 2; i++) {
+				ProxyRules.knownNoProxyDomains.delete(entries[i]);
+			}
+		}
+		ProxyRules.knownNoProxyDomains.add(domain);
 	}
 
 	public static validateRule(rule: ProxyRule): {
