@@ -55,8 +55,12 @@ export class ProxyRules {
 
 	/** Fast-path cache: domains confirmed to use proxy - O(1) positive lookup */
 	private static knownProxyDomains: Set<string> = new Set();
+	/** Fast-path cache: base domains with subdomain rules - for O(k) subdomain matching */
+	private static knownProxyBaseDomains: Set<string> = new Set();
 	/** Fast-path cache: domains confirmed to NOT use proxy - O(1) negative lookup (bloom filter style) */
 	private static knownNoProxyDomains: Set<string> = new Set();
+	/** Fast-path cache: base domains confirmed to NOT use proxy (including subdomains) */
+	private static knownNoProxyBaseDomains: Set<string> = new Set();
 	/** Max size for domain caches */
 	private static readonly MAX_DOMAIN_CACHE_SIZE = 5000;
 
@@ -344,7 +348,9 @@ export class ProxyRules {
 		ProxyRules.singleRuleMatchCache.clear();
 		// Clear fast-path domain caches
 		ProxyRules.knownProxyDomains.clear();
+		ProxyRules.knownProxyBaseDomains.clear();
 		ProxyRules.knownNoProxyDomains.clear();
+		ProxyRules.knownNoProxyBaseDomains.clear();
 		// Clear optimized data structures
 		ProxyRules.domainTrie = new DomainTrieNode();
 		ProxyRules.exactUrlMap.clear();
@@ -485,27 +491,38 @@ export class ProxyRules {
 			domainHostLowerCase = Utils.extractHostNameFromUrl(lowerCaseUrl);
 
 			// FAST PATH 1: O(1) check if domain is known to NOT need proxy
-			if (domainHostLowerCase && ProxyRules.knownNoProxyDomains.has(domainHostLowerCase)) {
-				// Domain confirmed to not need proxy, skip all rule matching
-				// Still cache the result for this specific URL
-				if (cacheKey.length < 500) {
-					ProxyRules.addSingleRuleToCache(cacheKey, null, rules);
+			if (domainHostLowerCase) {
+				if (ProxyRules.knownNoProxyDomains.has(domainHostLowerCase)) {
+					// Domain confirmed to not need proxy, skip all rule matching
+					if (cacheKey.length < 500) {
+						ProxyRules.addSingleRuleToCache(cacheKey, null, rules);
+					}
+					return null;
 				}
-				return null;
+				// Check if domain is a subdomain of a known no-proxy base domain
+				if (ProxyRules.isSubdomainOfAny(domainHostLowerCase, ProxyRules.knownNoProxyBaseDomains)) {
+					if (cacheKey.length < 500) {
+						ProxyRules.addSingleRuleToCache(cacheKey, null, rules);
+					}
+					return null;
+				}
 			}
 
 			// Build optimized structures if needed
 			ProxyRules.buildOptimizedStructures(rules);
 
-			// FAST PATH 2: O(1) check if domain is known to use proxy
-			if (domainHostLowerCase && ProxyRules.knownProxyDomains.has(domainHostLowerCase)) {
-				// Domain confirmed to use proxy, find the matching rule quickly
-				// Check exact domain match first
-				let domainMatch = ProxyRules.exactDomainMap.get(domainHostLowerCase);
-				if (domainMatch) {
-					result = domainMatch;
-				} else {
-					// Try trie for subdomain match
+			// FAST PATH 2: O(1) or O(k) check if domain is known to use proxy
+			if (domainHostLowerCase) {
+				if (ProxyRules.knownProxyDomains.has(domainHostLowerCase)) {
+					// Domain confirmed to use proxy, find the matching rule quickly
+					let domainMatch = ProxyRules.exactDomainMap.get(domainHostLowerCase);
+					if (domainMatch) {
+						result = domainMatch;
+					} else {
+						result = ProxyRules.searchDomainInTrie(domainHostLowerCase);
+					}
+				} else if (ProxyRules.isSubdomainOfAny(domainHostLowerCase, ProxyRules.knownProxyBaseDomains)) {
+					// Domain is a subdomain of a known proxy base domain
 					result = ProxyRules.searchDomainInTrie(domainHostLowerCase);
 				}
 			}
@@ -628,9 +645,21 @@ export class ProxyRules {
 		// Update domain caches for fast-path lookups (only cache simple domain results, not port-specific)
 		if (domainHostLowerCase && !domainHostLowerCase.includes(':')) {
 			if (result) {
-				ProxyRules.addToKnownProxyDomains(domainHostLowerCase);
+				// Check if this is a subdomain rule - if so, cache the base domain
+				if (result.compiledRuleType === CompiledProxyRuleType.SearchDomainSubdomain ||
+					result.compiledRuleType === CompiledProxyRuleType.SearchDomainSubdomainAndPath) {
+					ProxyRules.addToKnownProxyBaseDomains(result.search);
+				} else {
+					ProxyRules.addToKnownProxyDomains(domainHostLowerCase);
+				}
 			} else {
+				// No match - cache the exact domain and also extract base domain
 				ProxyRules.addToKnownNoProxyDomains(domainHostLowerCase);
+				// Cache base domain for subdomain rules (prevents checking all subdomains)
+				let baseDomain = ProxyRules.extractBaseDomain(domainHostLowerCase);
+				if (baseDomain && baseDomain !== domainHostLowerCase) {
+					ProxyRules.addToKnownNoProxyBaseDomains(baseDomain);
+				}
 			}
 		}
 
@@ -673,6 +702,70 @@ export class ProxyRules {
 			}
 		}
 		ProxyRules.knownNoProxyDomains.add(domain);
+	}
+
+	/** Add base domain to known proxy base domains cache with size limit */
+	private static addToKnownProxyBaseDomains(baseDomain: string) {
+		if (ProxyRules.knownProxyBaseDomains.size >= ProxyRules.MAX_DOMAIN_CACHE_SIZE) {
+			const entries = Array.from(ProxyRules.knownProxyBaseDomains);
+			for (let i = 0; i < entries.length / 2; i++) {
+				ProxyRules.knownProxyBaseDomains.delete(entries[i]);
+			}
+		}
+		ProxyRules.knownProxyBaseDomains.add(baseDomain);
+	}
+
+	/** Add base domain to known no-proxy base domains cache with size limit */
+	private static addToKnownNoProxyBaseDomains(baseDomain: string) {
+		if (ProxyRules.knownNoProxyBaseDomains.size >= ProxyRules.MAX_DOMAIN_CACHE_SIZE) {
+			const entries = Array.from(ProxyRules.knownNoProxyBaseDomains);
+			for (let i = 0; i < entries.length / 2; i++) {
+				ProxyRules.knownNoProxyBaseDomains.delete(entries[i]);
+			}
+		}
+		ProxyRules.knownNoProxyBaseDomains.add(baseDomain);
+	}
+
+	/** Check if domain is a subdomain of any base domain in the set - O(k) where k is set size */
+	private static isSubdomainOfAny(domain: string, baseDomains: Set<string>): boolean {
+		// Check exact match first
+		if (baseDomains.has(domain)) {
+			return true;
+		}
+		// Check if domain ends with .baseDomain for any base domain
+		for (const baseDomain of baseDomains) {
+			if (domain.endsWith('.' + baseDomain)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Extract base domain from a hostname (e.g., 'sub.example.com' -> 'example.com') */
+	private static extractBaseDomain(hostname: string): string | null {
+		if (!hostname) return null;
+
+		const parts = hostname.split('.');
+
+		// Handle IP addresses
+		if (parts.length === 4 && /^\d+$/.test(parts[3])) {
+			return hostname;
+		}
+
+		// For simple domains like 'example.com'
+		if (parts.length <= 2) {
+			return hostname;
+		}
+
+		// Common TLDs with second-level domains
+		const twoPartTlds = ['co.uk', 'com.au', 'co.nz', 'co.jp', 'com.cn', 'co.in', 'gov.uk', 'ac.uk', 'edu.au'];
+		const lastTwoParts = parts.slice(-2).join('.');
+
+		if (twoPartTlds.includes(lastTwoParts)) {
+			return parts.slice(-3).join('.');
+		}
+
+		return parts.slice(-2).join('.');
 	}
 
 	public static validateRule(rule: ProxyRule): {
