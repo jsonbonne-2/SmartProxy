@@ -20,7 +20,7 @@ import { PolyFill } from "../lib/PolyFill";
 import { ProxyRules } from "./ProxyRules";
 import { Utils } from "../lib/Utils";
 import { TabManager, TabDataType } from "./TabManager";
-import { CommandMessages, FailedRequestType, CompiledProxyRule, TabProxyStatus } from "./definitions";
+import { CommandMessages, FailedRequestType, CompiledProxyRule, TabProxyStatus, CompiledProxyRulesMatchedSource } from "./definitions";
 import { Settings } from "./Settings";
 import { Debug } from "../lib/Debug";
 import { ProfileRules } from "./ProfileRules";
@@ -186,15 +186,26 @@ export class WebFailedRequestMonitor {
 
 							let multiTestResultList = ProxyRules.findMatchedDomainListInRulesInfo(proxyableDomainList, activeSmartProfile.compiledRules);
 							let requestHostRule: CompiledProxyRule = null;
+							let anyDomainHasWhitelistRule = false;
 
 							// checking if the request itself has rule or not
 							for (let result of multiTestResultList) {
-								if (result &&
-									result.compiledRule.hostName == requestHost) {
+								if (!result) continue;
 
-									requestHostRule = result.compiledRule;
-									break;
+								// Check if any domain has a whitelist rule (skip failed request tracking)
+								if (result.matchedRuleSource == CompiledProxyRulesMatchedSource.WhitelistRules ||
+									result.matchedRuleSource == CompiledProxyRulesMatchedSource.WhitelistSubscriptionRules) {
+									anyDomainHasWhitelistRule = true;
 								}
+
+								if (result.compiledRule.hostName == requestHost) {
+									requestHostRule = result.compiledRule;
+								}
+							}
+
+							// Skip failed request tracking if any domain has a whitelist rule
+							if (anyDomainHasWhitelistRule) {
+								break;
 							}
 
 							// add only if the request doesn't have rule
