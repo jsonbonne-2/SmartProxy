@@ -19,10 +19,13 @@ import { Core } from "./Core";
 import { PolyFill } from "../lib/PolyFill";
 import { ProxyRules } from "./ProxyRules";
 import { Utils } from "../lib/Utils";
-import { TabManager } from "./TabManager";
-import { CommandMessages, FailedRequestType, CompiledProxyRule } from "./definitions";
+import { TabManager, TabDataType } from "./TabManager";
+import { CommandMessages, FailedRequestType, CompiledProxyRule, TabProxyStatus } from "./definitions";
 import { Settings } from "./Settings";
 import { Debug } from "../lib/Debug";
+import { ProfileRules } from "./ProfileRules";
+import { SettingsOperation } from "./SettingsOperation";
+import { ProxyEngine } from "./ProxyEngine";
 
 export class WebFailedRequestMonitor {
 
@@ -232,6 +235,9 @@ export class WebFailedRequestMonitor {
 									WebFailedRequestMonitor.markIgnoreDomain(failedInfo, domain);
 									// add to the list
 									failedRequests.set(domain, failedInfo);
+
+									// Auto-add to proxy if tab is proxified
+									WebFailedRequestMonitor.autoAddFailedRequestIfProxified(tabData, domain, failedInfo);
 								}
 							} else {
 								// the root has match, just add it to prevent further checks
@@ -281,6 +287,9 @@ export class WebFailedRequestMonitor {
 							// add to the list
 							failedRequests.set(requestHost, failedInfo);
 
+							// Auto-add to proxy if tab is proxified
+							WebFailedRequestMonitor.autoAddFailedRequestIfProxified(tabData, requestHost, failedInfo);
+
 							// send only if there is no rule
 							if (!failedInfo.hasRule && !failedInfo.ignored) {
 								// send message to the tab
@@ -304,6 +313,51 @@ export class WebFailedRequestMonitor {
 		if (WebFailedRequestMonitor.checkIfDomainIgnored(requestHost)) {
 			Debug.info("markIgnoreDomain=true", requestHost, failedInfo);
 			failedInfo.ignored = true;
+		}
+	}
+
+	/** Auto-add failed request domain to the same proxy as tab's main domain */
+	private static autoAddFailedRequestIfProxified(tabData: TabDataType, requestHost: string, failedInfo: FailedRequestType) {
+		// Only auto-add if tab is proxified and has a proxy rule
+		if (tabData.proxified !== TabProxyStatus.Proxified || !tabData.proxyRuleHostName) {
+			return;
+		}
+
+		// Skip if already has a rule or is ignored
+		if (failedInfo.hasRule || failedInfo.ignored) {
+			return;
+		}
+
+		// Skip internal/local domains
+		if (!Utils.isNotInternalHostName(requestHost)) {
+			return;
+		}
+
+		// Skip if same as main hostname
+		if (requestHost === tabData.proxyRuleHostName) {
+			return;
+		}
+
+		Debug.log(`Auto-adding failed request to proxy: ${requestHost} (following ${tabData.proxyRuleHostName})`);
+
+		// Add the rule
+		let result = ProfileRules.enableByHostname(requestHost);
+		if (result?.success && result.rule) {
+			// Mark as having a rule now
+			failedInfo.hasRule = true;
+			failedInfo.ruleId = result.rule.ruleId;
+
+			// If the tab's rule has a specific proxy, apply it to this rule too
+			if (tabData.proxyServerFromRule?.id) {
+				ProfileRules.changeProxyForRule(result.rule.ruleId, tabData.proxyServerFromRule.id);
+			}
+
+			// Save settings
+			SettingsOperation.saveSmartProfiles();
+			SettingsOperation.saveAllSync();
+
+			// Notify proxy engine
+			ProxyEngine.notifyProxyRulesChanged();
 		}
 	}
 

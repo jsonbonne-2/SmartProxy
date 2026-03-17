@@ -267,7 +267,14 @@ export class Core {
 
 				let domain = message.domain;
 				let ruleId = message.ruleId;
-				ProfileRules.toggleRule(domain, ruleId);
+				let tabId = message.tabId;
+
+				// Use auto-add if this is adding a new rule (no ruleId means toggle on)
+				if (!ruleId) {
+					ProfileRules.enableByHostnameWithAutoAdd(domain, tabId);
+				} else {
+					ProfileRules.toggleRule(domain, ruleId);
+				}
 
 				settingsOperationLib.saveSmartProfiles();
 				settingsOperationLib.saveAllSync();
@@ -317,6 +324,14 @@ export class Core {
 
 				let result = ProfileRules.enableByHostnameList(domainList);
 
+				// Auto-add related URLs for the first domain if options are enabled
+				if (result.success && domainList.length > 0 && tabId) {
+					let options = settingsLib.current?.options;
+					if (options?.autoAddThirdPartyDomains || options?.autoAddFullUrlPaths) {
+						ProfileRules.enableByHostnameWithAutoAdd(domainList[0], tabId);
+					}
+				}
+
 				let updatedFailedRequests = WebFailedRequestMonitor.removeDomainsFromTabFailedRequests(tabId, domainList);
 
 				// notify the proxy script
@@ -359,6 +374,29 @@ export class Core {
 					sendResponse({
 						result: result,
 						failedRequests: updatedFailedRequests,
+					});
+				}
+				return;
+			}
+			case CommandMessages.PopupIgnoreDomain: {
+				if (!message.domain)
+					return;
+
+				let domain: string = message.domain;
+
+				// Add to ignore failure rules (whitelist that bypasses proxy)
+				ProfileRules.enableByHostnameListIgnoreFailureRules([domain]);
+
+				settingsOperationLib.saveSmartProfiles();
+				settingsOperationLib.saveAllSync();
+
+				settingsLib.updateActiveSettings();
+				proxyEngineLib.updateBrowsersProxyConfig();
+
+				if (sendResponse) {
+					sendResponse({
+						success: true,
+						message: `Domain "${domain}" added to ignore list`
 					});
 				}
 				return;
@@ -564,10 +602,13 @@ export class Core {
 				let enableDomain = message.enableByDomain;
 				let removeDomain = message.removeBySource;
 				let ruleId = message.ruleId;
+				let tabId = message.tabId;
 				let ruleResult;
 
-				if (enableDomain)
-					ruleResult = ProfileRules.enableByHostname(enableDomain);
+				if (enableDomain) {
+					// Use auto-add when enabling a domain
+					ruleResult = ProfileRules.enableByHostnameWithAutoAdd(enableDomain, tabId);
+				}
 				else
 					ruleResult = ProfileRules.removeByHostname(removeDomain, ruleId);
 

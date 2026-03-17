@@ -27,6 +27,12 @@ export class WebRequestMonitor {
 	private static timer: any = null;
 	private static requests: { [index: string]: any } = {};
 	private static debugInfo = false;
+	/** Cache of URLs that should be skipped from monitoring (internal/local) */
+	private static skipUrlCache: Set<string> = new Set();
+	/** Max cache size */
+	private static readonly MAX_CACHE_SIZE = 500;
+	/** URL prefixes to skip from monitoring */
+	private static readonly SKIP_URL_PREFIXES = ['chrome:', 'about:', 'edge:', 'data:', 'moz-', 'file:'];
 
 	public static startMonitor(callback: Function) {
 		if (WebRequestMonitor.isMonitoring) return;
@@ -94,6 +100,36 @@ export class WebRequestMonitor {
 		Debug.log(`${requestDetails.tabId}-${requestDetails.requestId}>`, message, requestDetails.url, additional || '');
 	}
 
+	/** Check if URL should be skipped from monitoring (internal/local URLs) */
+	private static shouldSkipUrl(url: string): boolean {
+		if (!url) return true;
+
+		// Quick prefix check
+		for (const prefix of WebRequestMonitor.SKIP_URL_PREFIXES) {
+			if (url.startsWith(prefix)) return true;
+		}
+
+		// Check cache
+		if (WebRequestMonitor.skipUrlCache.has(url)) return true;
+
+		// Check for local addresses
+		const lowerUrl = url.toLowerCase();
+		if (lowerUrl.includes('://127.0.0.1') ||
+			lowerUrl.includes('://localhost') ||
+			lowerUrl.includes('://192.168.') ||
+			lowerUrl.includes('://10.') ||
+			lowerUrl.includes('://172.16.')) {
+
+			// Add to cache for future skips
+			if (WebRequestMonitor.skipUrlCache.size < WebRequestMonitor.MAX_CACHE_SIZE) {
+				WebRequestMonitor.skipUrlCache.add(url);
+			}
+			return true;
+		}
+
+		return false;
+	}
+
 	private static findRequestByUrl(url) {
 		let requests = WebRequestMonitor.requests;
 		let matched = [];
@@ -123,6 +159,11 @@ export class WebRequestMonitor {
 
 	private static events = {
 		onBeforeRequest(requestDetails: any) {
+			// Early skip for internal/local URLs
+			if (WebRequestMonitor.shouldSkipUrl(requestDetails.url)) {
+				return;
+			}
+
 			let reqInfo = requestDetails;
 
 			if (requestDetails.tabId < 0) {
@@ -176,6 +217,10 @@ export class WebRequestMonitor {
 			}
 		},
 		onBeforeRedirect(requestDetails: any) {
+			// Early skip for internal/local URLs
+			if (WebRequestMonitor.shouldSkipUrl(requestDetails.url)) {
+				return;
+			}
 
 			let url = requestDetails.redirectUrl;
 			if (!url) return;
@@ -240,6 +285,11 @@ export class WebRequestMonitor {
 
 			if (!req) return;
 
+			// Early skip for internal/local URLs
+			if (WebRequestMonitor.shouldSkipUrl(requestDetails.url)) {
+				return;
+			}
+
 			if (req._relatedRequests && req._relatedRequests.length) {
 				// calling related on complete events
 				WebRequestMonitor.popArrayAndCallback(req._relatedRequests, WebRequestMonitor.events.onErrorOccurred);
@@ -265,20 +315,6 @@ export class WebRequestMonitor {
 				return;
 			}
 			if (requestDetails.error.indexOf('NS_ERROR_ABORT') === 0) {
-				return;
-			}
-			let checkUrl: string = requestDetails.url.toLowerCase();
-			if (
-				checkUrl.startsWith('file:') ||
-				checkUrl.startsWith('chrome:') ||
-				checkUrl.startsWith('edge:') ||
-				checkUrl.startsWith('about:') ||
-				checkUrl.startsWith('data:') ||
-				checkUrl.startsWith('moz-')
-			) {
-				return;
-			}
-			if (checkUrl.includes('://127.0.0.1')) {
 				return;
 			}
 

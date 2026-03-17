@@ -3,6 +3,8 @@ import { Utils } from "../lib/Utils";
 import { ProxyRule, ProxyRuleType, RuleId, SmartProfile, ProxyRuleSpecialProxyServer, ProxyServer } from "./definitions";
 import { ProfileOperations } from "./ProfileOperations";
 import { SettingsOperation } from "./SettingsOperation";
+import { Settings } from "./Settings";
+import { TabManager } from "./TabManager";
 
 export class ProfileRules {
 
@@ -324,5 +326,154 @@ export class ProfileRules {
 		if (itemIndex > -1) {
 			smartProfile.proxyRules.splice(itemIndex, 1);
 		}
+	}
+
+	/** Enable hostname with auto-add of related URLs based on settings */
+	public static enableByHostnameWithAutoAdd(hostname: string, tabId?: number): {
+		success: boolean,
+		message: string,
+		rule: ProxyRule,
+		autoAddedCount: number
+	} {
+		// First, add the main rule
+		let result = ProfileRules.enableByHostname(hostname);
+		if (!result.success) {
+			return {
+				...result,
+				autoAddedCount: 0
+			};
+		}
+
+		let autoAddedCount = 0;
+		let options = Settings.current?.options;
+
+		// Check if auto-add options are enabled
+		if (!options?.autoAddThirdPartyDomains && !options?.autoAddFullUrlPaths) {
+			return {
+				...result,
+				autoAddedCount: 0
+			};
+		}
+
+		// Get loaded URLs from tab
+		if (tabId == null) {
+			return {
+				...result,
+				autoAddedCount: 0
+			};
+		}
+
+		let tabData = TabManager.getTab(tabId);
+		if (!tabData) {
+			return {
+				...result,
+				autoAddedCount: 0
+			};
+		}
+
+		let loadedUrls = tabData.getLoadedUrls();
+		if (!loadedUrls || loadedUrls.length === 0) {
+			return {
+				...result,
+				autoAddedCount: 0
+			};
+		}
+
+		let smartProfile = ProfileOperations.getActiveSmartProfile();
+		if (!smartProfile) {
+			return {
+				...result,
+				autoAddedCount: 0
+			};
+		}
+
+		// Extract main domain for third-party detection
+		let mainDomain = ProfileRules.extractRootDomain(hostname);
+		let domainsToAdd = new Set<string>();
+
+		for (let url of loadedUrls) {
+			try {
+				let urlObj = new URL(url);
+				let urlHost = urlObj.hostname;
+
+				// Skip if same as main hostname
+				if (urlHost === hostname) {
+					continue;
+				}
+
+				// Option A: Auto-add third-party domains
+				if (options.autoAddThirdPartyDomains) {
+					let urlRootDomain = ProfileRules.extractRootDomain(urlHost);
+					// Only add if it's a third-party domain (different root domain)
+					if (urlRootDomain && urlRootDomain !== mainDomain) {
+						if (Utils.isNotInternalHostName(urlHost)) {
+							domainsToAdd.add(urlHost);
+						}
+					}
+				}
+
+				// Option B: Auto-add full URL paths
+				if (options.autoAddFullUrlPaths) {
+					// Add the full path as a rule pattern
+					let fullPath = urlHost + urlObj.pathname;
+					if (Utils.isNotInternalHostName(urlHost)) {
+						domainsToAdd.add(fullPath);
+					}
+				}
+			} catch (e) {
+				// Invalid URL, skip
+				continue;
+			}
+		}
+
+		// Add rules for extracted domains (no limit - add all)
+		for (let domain of domainsToAdd) {
+			// Check if rule already exists
+			let existingRule = ProfileRules.getRuleByHostname(smartProfile, domain);
+			if (!existingRule) {
+				ProfileRules.addRuleByHostname(smartProfile, domain);
+				autoAddedCount++;
+			}
+		}
+
+		return {
+			success: true,
+			message: result.message,
+			rule: result.rule,
+			autoAddedCount: autoAddedCount
+		};
+	}
+
+	/** Extract root domain from hostname (e.g., 'www.example.com' -> 'example.com') */
+	private static extractRootDomain(hostname: string): string | null {
+		if (!hostname) return null;
+
+		// Remove port if present
+		let host = hostname.split(':')[0];
+
+		// Split by dots
+		let parts = host.split('.');
+
+		// Handle IP addresses
+		if (parts.length === 4 && /^\d+$/.test(parts[3])) {
+			return host; // It's an IP address
+		}
+
+		// For simple domains like 'example.com' or 'example.co.uk'
+		if (parts.length <= 2) {
+			return host;
+		}
+
+		// Common TLDs that have second-level domains (e.g., co.uk, com.au)
+		const twoPartTlds = ['co.uk', 'com.au', 'co.nz', 'co.jp', 'com.cn', 'co.in', 'gov.uk', 'ac.uk', 'edu.au'];
+		let lastTwoParts = parts.slice(-2).join('.');
+
+		if (twoPartTlds.includes(lastTwoParts)) {
+			// Return last 3 parts
+			return parts.slice(-3).join('.');
+		}
+
+		// Return last 2 parts for normal TLDs
+		return parts.slice(-2).join('.');
 	}
 }

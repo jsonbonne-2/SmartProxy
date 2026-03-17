@@ -157,6 +157,7 @@ export class CommandMessages {
 	public static PopupChangeProxyForRule = 'Popup_ChangeProxyForRule';
 	public static PopupAddDomainListToProxyRule = 'Popup_AddDomainListToProxyRule';
 	public static PopupAddDomainListToIgnored = 'Popup_AddDomainListToIgnored';
+	public static PopupIgnoreDomain = 'Popup_IgnoreDomain';
 
 	// Settings page
 	public static SettingsPageGetInitialData = 'SettingsPage_GetInitialData';
@@ -689,6 +690,10 @@ export class GeneralOptions implements Cloneable, Comparable {
 	public enableShortcuts: boolean = true;
 	public shortcutNotification: boolean = true;
 	public themeType: ThemeType = ThemeType.Auto;
+	/** Auto-add all third-party domains loaded with the main domain */
+	public autoAddThirdPartyDomains: boolean = true;
+	/** Auto-add full URL paths instead of just domains */
+	public autoAddFullUrlPaths: boolean = true;
 	public themesLight: string;
 	public themesLightCustomUrl: string;
 	public themesDark: string = GeneralOptions.defaultDarkThemeName;
@@ -720,6 +725,10 @@ export class GeneralOptions implements Cloneable, Comparable {
 		if (source['enableShortcuts'] != null) this.enableShortcuts = source['enableShortcuts'] == true ? true : false;
 		if (source['shortcutNotification'] != null)
 			this.shortcutNotification = source['shortcutNotification'] == true ? true : false;
+		if (source['autoAddThirdPartyDomains'] != null)
+			this.autoAddThirdPartyDomains = source['autoAddThirdPartyDomains'] == true ? true : false;
+		if (source['autoAddFullUrlPaths'] != null)
+			this.autoAddFullUrlPaths = source['autoAddFullUrlPaths'] == true ? true : false;
 		this.themeType = source['themeType'] || ThemeType.Auto;
 		this.themesLight = source['themesLight'];
 		this.themesLightCustomUrl = source['themesLightCustomUrl'];
@@ -745,6 +754,8 @@ export class GeneralOptions implements Cloneable, Comparable {
 		if (neq(other.activeIncognitoProfileId, this.activeIncognitoProfileId)) return false;
 		if (neq(other.enableShortcuts, this.enableShortcuts)) return false;
 		if (neq(other.shortcutNotification, this.shortcutNotification)) return false;
+		if (neq(other.autoAddThirdPartyDomains, this.autoAddThirdPartyDomains)) return false;
+		if (neq(other.autoAddFullUrlPaths, this.autoAddFullUrlPaths)) return false;
 		if (neq(other.themeType, this.themeType)) return false;
 		if (neq(other.themesLight, this.themesLight)) return false;
 		if (neq(other.themesLightCustomUrl, this.themesLightCustomUrl)) return false;

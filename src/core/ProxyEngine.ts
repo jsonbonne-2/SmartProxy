@@ -19,6 +19,7 @@ import { environment } from "../lib/environment";
 import { ProxyEngineChrome } from "./ProxyEngineChrome";
 import { Settings } from "./Settings";
 import { DiagDebug } from "../lib/Debug";
+import { ProxyRules } from "./ProxyRules";
 
 export class ProxyEngine {
 
@@ -60,6 +61,9 @@ export class ProxyEngine {
     }
 
     public static notifyProxyRulesChanged() {
+
+        // Clear URL match cache since rules have changed
+        ProxyRules.clearMatchCache();
 
         // update proxy rules
         Settings.updateActiveSettings();

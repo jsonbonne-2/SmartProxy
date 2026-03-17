@@ -346,6 +346,13 @@ export class popup {
 				popup.onProxyableArrowClick(this, proxyableDomain);
 			});
 
+			// Setup ignore button click handler
+			item.find(".proxyable-ignore-btn").on("click", function (e) {
+				e.preventDefault();
+				e.stopPropagation();
+				popup.onProxyableIgnoreClick(proxyableDomain, item);
+			});
+
 			divProxyableDomainItem.hide();
 		}
 	}
@@ -594,7 +601,8 @@ export class popup {
 			PolyFill.runtimeSendMessage({
 				command: CommandMessages.PopupToggleProxyForDomain,
 				domain: domain,
-				ruleId: proxyableDomain.ruleId
+				ruleId: proxyableDomain.ruleId,
+				tabId: popup.popupData.currentTabId
 			});
 
 			popup.refreshActiveTabIfNeeded();
@@ -687,6 +695,26 @@ export class popup {
 		});
 
 		popup.refreshActiveTabIfNeeded();
+	}
+
+	private static onProxyableIgnoreClick(proxyableDomain: ProxyableDomainType, item: any) {
+		let domain = proxyableDomain.domain;
+
+		PolyFill.runtimeSendMessage({
+			command: CommandMessages.PopupIgnoreDomain,
+			domain: domain,
+			tabId: popup.popupData.currentTabId
+		});
+
+		// Update UI to show ignored status
+		let itemIcon = item.find(".proxyable-status-icon");
+		itemIcon.removeClass("fa-square fa-check-square").addClass("fa-ban");
+		item.addClass("text-muted");
+		item.find(".nav-link").addClass("disabled");
+
+		// Close the panel
+		item.find(".proxyable-panel").slideUp(200);
+		item.find(".proxyable-arrow-btn i").removeClass("fa-chevron-up").addClass("fa-chevron-down");
 	}
 
 	private static getSelectedFailedRequests(): string[] {

@@ -248,6 +248,7 @@ export class TabDataType {
 		this.failedRequests = new Map<string, FailedRequestType>();
 		this.proxified = TabProxyStatus.None;
 		this.status = new TabDataStatuses();
+		this.loadedUrls = new Set<string>();
 	}
 
 	public tabId: number;
@@ -263,6 +264,8 @@ export class TabDataType {
 	public proxyMatchedRule?: CompiledProxyRule;
 	public proxyServerFromRule: ProxyServer;
 	public status: TabDataStatuses;
+	/** All URLs loaded in this tab */
+	public loadedUrls: Set<string>;
 
 	/** Removes failed requests */
 	public clearFailedRequests() {
@@ -276,6 +279,24 @@ export class TabDataType {
 			this.failedRequests.forEach((request, requestDomainKey, map) => {
 				request.hitCount = 1;
 			});
+	}
+
+	/** Add a URL to the loaded URLs set */
+	public addLoadedUrl(url: string) {
+		if (url && this.loadedUrls) {
+			this.loadedUrls.add(url);
+		}
+	}
+
+	/** Get all loaded URLs as an array */
+	public getLoadedUrls(): string[] {
+		return this.loadedUrls ? Array.from(this.loadedUrls) : [];
+	}
+
+	/** Clears all loaded URLs */
+	public clearLoadedUrls() {
+		if (this.loadedUrls)
+			this.loadedUrls.clear();
 	}
 
 	/** Resets tab`s proxy state and its statuses */
