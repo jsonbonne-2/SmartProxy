@@ -19,7 +19,7 @@ import { Utils } from "../lib/Utils";
 import { PolyFill } from "../lib/PolyFill";
 import { Debug } from "../lib/Debug";
 import { ProxyRules } from "./ProxyRules";
-import { CommandMessages, ProxyableLogDataType, CompiledProxyRulesMatchedSource, SmartProfileType, monitorUrlsSchemaFilter, ProxyableProxifiedStatus, ProxyableMatchedRuleStatus, CompiledProxyRuleSource, TabProxyStatus } from "./definitions";
+import { CommandMessages, ProxyableLogDataType, CompiledProxyRulesMatchedSource, SmartProfileType, monitorUrlsSchemaFilter, ProxyableProxifiedStatus, ProxyableMatchedRuleStatus, CompiledProxyRuleSource, TabProxyStatus, TabConnectivityTestStatus } from "./definitions";
 import { api, environment } from "../lib/environment";
 import { Settings } from "./Settings";
 import { ProfileRules } from "./ProfileRules";
@@ -68,17 +68,41 @@ export class TabRequestLogger {
 			// only requests from tabs are logged
 			return;
 
-		// Only track if auto-add options are enabled
 		let options = Settings.current?.options;
+
+		let tabData = TabManager.getTab(tabId);
+		if (!tabData)
+			return;
+
+		// Always track loaded URLs for connectivity test
+		let url = requestDetails.url;
+		if (url && url.length <= 2000 && (url.startsWith('http://') || url.startsWith('https://'))) {
+			// Early skip for internal/local domains
+			let skip = false;
+			for (const prefix of TabRequestLogger.SKIP_DOMAIN_PREFIXES) {
+				if (url.includes(prefix)) {
+					skip = true;
+					break;
+				}
+			}
+			if (!skip) {
+				tabData.addLoadedUrl(url);
+			}
+		}
+
+		// If tab is in connectivity test mode, don't auto-add rules yet
+		if (tabData.connectivityTestStatus === TabConnectivityTestStatus.Testing) {
+			return;
+		}
+
+		// Only track if auto-add options are enabled
 		if (!options?.autoAddThirdPartyDomains && !options?.autoAddFullUrlPaths)
 			return;
 
-		// Early check: get tab data and skip if tab is not proxified
-		let tabData = TabManager.getTab(tabId);
-		if (!tabData || tabData.proxified !== TabProxyStatus.Proxified || !tabData.proxyRuleHostName)
+		// Early check: skip if tab is not proxified
+		if (tabData.proxified !== TabProxyStatus.Proxified || !tabData.proxyRuleHostName)
 			return;
 
-		let url = requestDetails.url;
 		if (!url || url.length > 2000)
 			// Skip very long URLs to avoid memory issues
 			return;
@@ -93,8 +117,6 @@ export class TabRequestLogger {
 				return;
 			}
 		}
-
-		tabData.addLoadedUrl(url);
 
 		// Auto-add URL since tab's main domain is already proxied
 		TabRequestLogger.autoAddUrlIfNeeded(url, tabData.proxyRuleHostName, tabId);

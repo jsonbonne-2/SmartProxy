@@ -342,6 +342,18 @@
 	"settingsGeneralDisplayFailedOnBadge": {
 		"message": "Display failed requests count on toolbar icon badge"
 	},
+	"settingsGeneralAutoWhitelistSuccessfulDomains": {
+		"message": "Auto-whitelist successful domains"
+	},
+	"settingsGeneralAutoWhitelistSuccessfulDomainsDesc": {
+		"message": "Automatically add domains to whitelist when they load successfully without proxy."
+	},
+	"settingsGeneralTestNewDomainConnectivity": {
+		"message": "Auto-proxy failed domains"
+	},
+	"settingsGeneralTestNewDomainConnectivityDesc": {
+		"message": "Try direct connection first for new domains. If failed, automatically add to proxy rules and reload."
+	},
 	"settingsGeneralThemes": {
 		"message": "Themes"
 	},

@@ -694,6 +694,10 @@ export class GeneralOptions implements Cloneable, Comparable {
 	public autoAddThirdPartyDomains: boolean = true;
 	/** Auto-add full URL paths instead of just domains */
 	public autoAddFullUrlPaths: boolean = true;
+	/** Auto-add successfully accessed domains (without proxy) to whitelist */
+	public autoWhitelistSuccessfulDomains: boolean = true;
+	/** Test connectivity for new domains - first try DIRECT, if failed switch to PROXY */
+	public testNewDomainConnectivity: boolean = true;
 	public themesLight: string;
 	public themesLightCustomUrl: string;
 	public themesDark: string = GeneralOptions.defaultDarkThemeName;
@@ -729,6 +733,10 @@ export class GeneralOptions implements Cloneable, Comparable {
 			this.autoAddThirdPartyDomains = source['autoAddThirdPartyDomains'] == true ? true : false;
 		if (source['autoAddFullUrlPaths'] != null)
 			this.autoAddFullUrlPaths = source['autoAddFullUrlPaths'] == true ? true : false;
+		if (source['autoWhitelistSuccessfulDomains'] != null)
+			this.autoWhitelistSuccessfulDomains = source['autoWhitelistSuccessfulDomains'] == true ? true : false;
+		if (source['testNewDomainConnectivity'] != null)
+			this.testNewDomainConnectivity = source['testNewDomainConnectivity'] == true ? true : false;
 		this.themeType = source['themeType'] || ThemeType.Auto;
 		this.themesLight = source['themesLight'];
 		this.themesLightCustomUrl = source['themesLightCustomUrl'];
@@ -756,6 +764,8 @@ export class GeneralOptions implements Cloneable, Comparable {
 		if (neq(other.shortcutNotification, this.shortcutNotification)) return false;
 		if (neq(other.autoAddThirdPartyDomains, this.autoAddThirdPartyDomains)) return false;
 		if (neq(other.autoAddFullUrlPaths, this.autoAddFullUrlPaths)) return false;
+		if (neq(other.autoWhitelistSuccessfulDomains, this.autoWhitelistSuccessfulDomains)) return false;
+		if (neq(other.testNewDomainConnectivity, this.testNewDomainConnectivity)) return false;
 		if (neq(other.themeType, this.themeType)) return false;
 		if (neq(other.themesLight, this.themesLight)) return false;
 		if (neq(other.themesLightCustomUrl, this.themesLightCustomUrl)) return false;
@@ -1324,4 +1334,16 @@ export enum TabProxyStatus {
 	None,
 	Proxified,
 	Whitelisted
+}
+
+/** Tab connectivity test status for new domain detection */
+export enum TabConnectivityTestStatus {
+	/** Not testing */
+	None,
+	/** Main frame is being tested for connectivity */
+	Testing,
+	/** Main frame connected successfully via DIRECT */
+	DirectSuccess,
+	/** Main frame needs proxy (DIRECT failed) */
+	ProxyNeeded
 }

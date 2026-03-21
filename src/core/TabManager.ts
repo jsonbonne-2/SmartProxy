@@ -16,7 +16,7 @@
  */
 import { PolyFill } from "../lib/PolyFill";
 import { LiteEvent } from "../lib/LiteEvent";
-import { CompiledProxyRule, FailedRequestType, ProxyServer, TabProxyStatus } from "./definitions";
+import { CompiledProxyRule, FailedRequestType, ProxyServer, TabProxyStatus, TabConnectivityTestStatus } from "./definitions";
 import { api, environment } from "../lib/environment";
 import { Settings } from "./Settings";
 import { ProxyRules } from "./ProxyRules";
@@ -249,6 +249,8 @@ export class TabDataType {
 		this.proxified = TabProxyStatus.None;
 		this.status = new TabDataStatuses();
 		this.loadedUrls = new Set<string>();
+		this.connectivityTestStatus = TabConnectivityTestStatus.None;
+		this.mainFrameDomain = null;
 	}
 
 	public tabId: number;
@@ -266,6 +268,10 @@ export class TabDataType {
 	public status: TabDataStatuses;
 	/** All URLs loaded in this tab */
 	public loadedUrls: Set<string>;
+	/** Connectivity test status for new domain detection */
+	public connectivityTestStatus: TabConnectivityTestStatus;
+	/** Main frame domain being tested */
+	public mainFrameDomain: string;
 
 	/** Removes failed requests */
 	public clearFailedRequests() {
@@ -305,6 +311,9 @@ export class TabDataType {
 		this.proxified = TabProxyStatus.None;
 		this.proxyServerFromRule = null;
 		this.proxifiedParentDocumentUrl = null;
+		this.connectivityTestStatus = TabConnectivityTestStatus.None;
+		this.mainFrameDomain = null;
+		this.clearLoadedUrls();
 
 		this.status = new TabDataStatuses();
 	}

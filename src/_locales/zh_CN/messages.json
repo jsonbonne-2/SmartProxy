@@ -342,6 +342,18 @@
 	"settingsGeneralDisplayFailedOnBadge": {
 		"message": "在工具栏图标上显示加载失败的资源数量"
 	},
+	"settingsGeneralAutoWhitelistSuccessfulDomains": {
+		"message": "自动白名单访问成功的域名"
+	},
+	"settingsGeneralAutoWhitelistSuccessfulDomainsDesc": {
+		"message": "当域名无需代理即可成功加载时，自动添加到白名单。"
+	},
+	"settingsGeneralTestNewDomainConnectivity": {
+		"message": "自动代理访问失败的域名"
+	},
+	"settingsGeneralTestNewDomainConnectivityDesc": {
+		"message": "对新域名首先尝试直连。如果失败，自动添加到代理规则并刷新页面。"
+	},
 	"settingsGeneralThemes": {
 		"message": "主题"
 	},

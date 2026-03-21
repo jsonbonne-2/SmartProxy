@@ -476,4 +476,141 @@ export class ProfileRules {
 		// Return last 2 parts for normal TLDs
 		return parts.slice(-2).join('.');
 	}
+
+	/** Whitelist a hostname (add to whitelist rules) */
+	public static whitelistByHostname(hostname: string, tabId?: number): {
+		success: boolean,
+		message: string,
+		rule: ProxyRule,
+		autoAddedCount: number
+	} {
+		let smartProfile = ProfileOperations.getActiveSmartProfile();
+		if (smartProfile == null) {
+			return {
+				success: false,
+				message: 'No active profile found',
+				rule: null,
+				autoAddedCount: 0
+			};
+		}
+
+		if (!smartProfile.profileTypeConfig.editable ||
+			!ProfileOperations.profileTypeSupportsRules(smartProfile.profileType)) {
+			return {
+				success: false,
+				message: api.i18n.getMessage("settingsEnableByDomainSmartProfileNonEditable").replace("{0}", smartProfile.profileName),
+				rule: null,
+				autoAddedCount: 0
+			};
+		}
+
+		// Validate hostname
+		if (!Utils.isNotInternalHostName(hostname)) {
+			return {
+				success: false,
+				message: api.i18n.getMessage("settingsEnableByDomainInvalid"),
+				rule: null,
+				autoAddedCount: 0
+			};
+		}
+
+		// Check if rule already exists
+		let existingRule = ProfileRules.getRuleByHostname(smartProfile, hostname);
+		if (existingRule != null) {
+			// Rule exists - if it's already a whitelist rule, we're done
+			if (existingRule.whiteList) {
+				return {
+					success: true,
+					message: api.i18n.getMessage("settingsEnableByDomainExists"),
+					rule: existingRule,
+					autoAddedCount: 0
+				};
+			}
+			// Otherwise convert it to whitelist
+			existingRule.whiteList = true;
+			return {
+				success: true,
+				message: null,
+				rule: existingRule,
+				autoAddedCount: 0
+			};
+		}
+
+		// Create new whitelist rule
+		let rule = new ProxyRule();
+		rule.ruleType = ProxyRuleType.DomainSubdomain;
+		rule.ruleSearch = hostname;
+		rule.autoGeneratePattern = true;
+		rule.hostName = hostname;
+		rule.enabled = true;
+		rule.proxy = null;
+		rule.whiteList = true;
+
+		ProfileRules.addRule(smartProfile, rule);
+
+		let autoAddedCount = 0;
+
+		// Auto-add sub-resources from tab if available
+		if (tabId != null) {
+			let tabData = TabManager.getTab(tabId);
+			if (tabData) {
+				let loadedUrls = tabData.getLoadedUrls();
+				if (loadedUrls && loadedUrls.length > 0) {
+					let mainDomain = ProfileRules.extractRootDomain(hostname);
+					let domainsToAdd = new Set<string>();
+
+					for (let url of loadedUrls) {
+						try {
+							let urlObj = new URL(url);
+							let urlHost = urlObj.hostname;
+
+							// Skip if same as main hostname
+							if (urlHost === hostname) {
+								continue;
+							}
+
+							// Add third-party domains to whitelist
+							let urlRootDomain = ProfileRules.extractRootDomain(urlHost);
+							if (urlRootDomain && urlRootDomain !== mainDomain) {
+								if (Utils.isNotInternalHostName(urlHost)) {
+									domainsToAdd.add(urlHost);
+								}
+							}
+						} catch (e) {
+							// Invalid URL, skip
+							continue;
+						}
+					}
+
+					// Add whitelist rules for extracted domains
+					for (let domain of domainsToAdd) {
+						let existingSubRule = ProfileRules.getRuleByHostname(smartProfile, domain);
+						if (!existingSubRule) {
+							let subRule = new ProxyRule();
+							subRule.ruleType = ProxyRuleType.DomainSubdomain;
+							subRule.ruleSearch = domain;
+							subRule.autoGeneratePattern = true;
+							subRule.hostName = domain;
+							subRule.enabled = true;
+							subRule.proxy = null;
+							subRule.whiteList = true;
+							ProfileRules.addRule(smartProfile, subRule);
+							autoAddedCount++;
+						} else if (!existingSubRule.whiteList) {
+							// Convert existing rule to whitelist
+							existingSubRule.whiteList = true;
+							autoAddedCount++;
+						}
+					}
+				}
+			}
+		}
+
+		return {
+			success: true,
+			message: null,
+			rule: rule,
+			autoAddedCount: autoAddedCount
+		};
+	}
 }

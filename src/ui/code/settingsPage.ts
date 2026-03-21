@@ -1071,6 +1071,8 @@ export class settingsPage {
 		divGeneral.find("#chkRefreshTabOnConfigChanges").prop("checked", options.refreshTabOnConfigChanges || false);
 		divGeneral.find("#chkAutoAddThirdPartyDomains").prop("checked", options.autoAddThirdPartyDomains !== false);
 		divGeneral.find("#chkAutoAddFullUrlPaths").prop("checked", options.autoAddFullUrlPaths !== false);
+		divGeneral.find("#chkAutoWhitelistSuccessfulDomains").prop("checked", options.autoWhitelistSuccessfulDomains !== false);
+		divGeneral.find("#chkTestNewDomainConnectivity").prop("checked", options.testNewDomainConnectivity !== false);
 
 		divGeneral.find("#rbtnThemesAutoSwitchBySystem").prop("checked", options.themeType == ThemeType.Auto);
 		divGeneral.find("#rbtnThemesLight").prop("checked", options.themeType == ThemeType.Light);
@@ -1122,6 +1124,8 @@ export class settingsPage {
 		generalOptions.refreshTabOnConfigChanges = divGeneral.find("#chkRefreshTabOnConfigChanges").prop("checked");
 		generalOptions.autoAddThirdPartyDomains = divGeneral.find("#chkAutoAddThirdPartyDomains").prop("checked");
 		generalOptions.autoAddFullUrlPaths = divGeneral.find("#chkAutoAddFullUrlPaths").prop("checked");
+		generalOptions.autoWhitelistSuccessfulDomains = divGeneral.find("#chkAutoWhitelistSuccessfulDomains").prop("checked");
+		generalOptions.testNewDomainConnectivity = divGeneral.find("#chkTestNewDomainConnectivity").prop("checked");
 		if (divGeneral.find("#rbtnThemesLight").prop("checked")) {
 			generalOptions.themeType = ThemeType.Light;
 		}

@@ -194,6 +194,14 @@ export class Settings {
 		}
 		if (config['options'] == null) {
 			config.options = new GeneralOptions();
+		} else {
+			// Ensure new options have default values for fields added in newer versions
+			if (config.options['autoWhitelistSuccessfulDomains'] == null) {
+				config.options.autoWhitelistSuccessfulDomains = true;
+			}
+			if (config.options['testNewDomainConnectivity'] == null) {
+				config.options.testNewDomainConnectivity = true;
+			}
 		}
 		if (config['uiOptions'] == null) {
 			config.uiOptions = new UIOptions();

@@ -20,12 +20,14 @@ import { PolyFill } from "../lib/PolyFill";
 import { ProxyRules } from "./ProxyRules";
 import { Utils } from "../lib/Utils";
 import { TabManager, TabDataType } from "./TabManager";
-import { CommandMessages, FailedRequestType, CompiledProxyRule, TabProxyStatus, CompiledProxyRulesMatchedSource } from "./definitions";
+import { CommandMessages, FailedRequestType, CompiledProxyRule, CompiledProxyRulesMatchedSource, TabConnectivityTestStatus } from "./definitions";
 import { Settings } from "./Settings";
 import { Debug } from "../lib/Debug";
 import { ProfileRules } from "./ProfileRules";
 import { SettingsOperation } from "./SettingsOperation";
 import { ProxyEngine } from "./ProxyEngine";
+import { api } from "../lib/environment";
+import { ProfileOperations } from "./ProfileOperations";
 
 export class WebFailedRequestMonitor {
 
@@ -106,7 +108,37 @@ export class WebFailedRequestMonitor {
 		// Uncomment for verbose events: DiagDebug?.trace("WebFailedMonitorCall", 't=' + tabId, RequestMonitorEvent[eventType], requestHost);
 
 		switch (eventType) {
+			case RequestMonitorEvent.RequestStart:
+				{
+					// Handle new domain connectivity test start
+					WebFailedRequestMonitor.handleNewDomainConnectivityStart(requestDetails, tabData);
+					break;
+				}
 			case RequestMonitorEvent.RequestComplete:
+				{
+					// Handle new domain connectivity test result
+					WebFailedRequestMonitor.handleNewDomainConnectivityComplete(requestDetails, tabData);
+
+					// Auto-whitelist successful main frame requests
+					WebFailedRequestMonitor.autoWhitelistSuccessfulMainFrame(requestDetails, tabData);
+
+					// remove the log
+					let removed = WebFailedRequestMonitor.deleteFailedRequests(failedRequests, requestHost);
+
+					if (removed) {
+						// if there was an entry
+
+						// send message to the tab
+						WebFailedRequestMonitor.sendWebFailedRequestNotification(
+							tabId,
+							null,
+							failedRequests);
+
+						Core.setBrowserActionStatus(tabData);
+					}
+					break;
+				}
+
 			case RequestMonitorEvent.RequestRevertTimeout:
 				{
 					// remove the log
@@ -169,6 +201,16 @@ export class WebFailedRequestMonitor {
 			case RequestMonitorEvent.RequestTimeout:
 			case RequestMonitorEvent.RequestError:
 				{
+					// Handle new domain connectivity test failure
+					if (requestDetails.type === 'main_frame') {
+						let handled = WebFailedRequestMonitor.handleNewDomainConnectivityFailure(requestDetails, tabData);
+						if (handled) {
+							// New domain test was handled - we added rules and will refresh
+							// Don't continue with normal failure handling
+							break;
+						}
+					}
+
 					let failedInfo = failedRequests.get(requestHost);
 					if (failedInfo) {
 						if (eventType == RequestMonitorEvent.RequestError) {
@@ -182,6 +224,7 @@ export class WebFailedRequestMonitor {
 
 						let shouldNotifyFailures = false;
 						let proxyableDomainList = Utils.extractSubdomainListFromHost(requestHost);
+
 						if (proxyableDomainList && proxyableDomainList.length > 1) {
 
 							let multiTestResultList = ProxyRules.findMatchedDomainListInRulesInfo(proxyableDomainList, activeSmartProfile.compiledRules);
@@ -318,6 +361,52 @@ export class WebFailedRequestMonitor {
 		}
 	}
 
+	/** Auto-whitelist successful main frame requests */
+	private static autoWhitelistSuccessfulMainFrame(requestDetails: any, tabData: TabDataType) {
+		// Check if option is enabled
+		if (!Settings.current.options.autoWhitelistSuccessfulDomains) {
+			return;
+		}
+
+		// Only process main frame requests
+		if (requestDetails.type !== 'main_frame') {
+			return;
+		}
+
+		let requestUrl = requestDetails.url;
+		let requestHost = Utils.extractHostFromUrl(requestUrl);
+
+		// Skip internal/local hosts
+		if (!Utils.isNotInternalHostName(requestHost)) {
+			return;
+		}
+
+		// Check if there's already a matching proxy rule for this host
+		let settingsActive = Settings.active;
+		let activeSmartProfile = settingsActive.activeProfile;
+		let testResult = ProxyRules.findMatchedDomainInRulesInfo(requestHost, activeSmartProfile.compiledRules);
+
+		if (testResult != null) {
+			// Already has a rule (proxy or whitelist), no need to whitelist
+			return;
+		}
+
+		// No rule exists and main frame loaded successfully - add to whitelist
+		Debug.log(`Auto-whitelisting successful domain: ${requestHost}`);
+
+		let result = ProfileRules.whitelistByHostname(requestHost, tabData.tabId);
+		if (result?.success) {
+			// Save settings
+			SettingsOperation.saveSmartProfiles();
+			SettingsOperation.saveAllSync();
+
+			// Notify proxy engine
+			ProxyEngine.notifyProxyRulesChanged();
+
+			Debug.log(`Auto-whitelisted ${result.autoAddedCount + 1} domains for ${requestHost}`);
+		}
+	}
+
 	/** Marks the a failed request to be ignored if it is requested by user using the ignore rules. */
 	private static markIgnoreDomain(failedInfo: FailedRequestType, requestHost: string) {
 
@@ -329,13 +418,32 @@ export class WebFailedRequestMonitor {
 
 	/** Auto-add failed request domain to the same proxy as tab's main domain */
 	private static autoAddFailedRequestIfProxified(tabData: TabDataType, requestHost: string, failedInfo: FailedRequestType) {
-		// Only auto-add if tab is proxified and has a proxy rule
-		if (tabData.proxified !== TabProxyStatus.Proxified || !tabData.proxyRuleHostName) {
+		// Check if main domain has a proxy rule (even if tab.proxified is not yet set)
+		let settingsActive = Settings.active;
+		let activeSmartProfile = settingsActive.activeProfile;
+		let mainDomainRule = null;
+
+		// If tab has a proxy rule hostname, check if it has a rule
+		if (tabData.proxyRuleHostName) {
+			mainDomainRule = ProxyRules.findMatchedDomainInRulesInfo(tabData.proxyRuleHostName, activeSmartProfile.compiledRules);
+		} else if (tabData.url) {
+			// Try to get main domain from tab URL
+			let mainHost = Utils.extractHostFromUrl(tabData.url);
+			if (mainHost) {
+				mainDomainRule = ProxyRules.findMatchedDomainInRulesInfo(mainHost, activeSmartProfile.compiledRules);
+			}
+		}
+
+		// Only auto-add if main domain has a proxy rule (not whitelist)
+		if (!mainDomainRule || mainDomainRule.matchedRuleSource === CompiledProxyRulesMatchedSource.WhitelistRules ||
+			mainDomainRule.matchedRuleSource === CompiledProxyRulesMatchedSource.WhitelistSubscriptionRules) {
 			return;
 		}
 
-		// Skip if already has a rule or is ignored
-		if (failedInfo.hasRule || failedInfo.ignored) {
+		// Skip if already has a precise rule for this host or is ignored
+		// Note: hasRule may be true even if the rule is for a parent domain (wildcard/subdomain matching)
+		// We only skip if the rule is specifically for this host (isRuleForThisHost=true)
+		if ((failedInfo.hasRule && failedInfo.isRuleForThisHost === true) || failedInfo.ignored) {
 			return;
 		}
 
@@ -345,11 +453,9 @@ export class WebFailedRequestMonitor {
 		}
 
 		// Skip if same as main hostname
-		if (requestHost === tabData.proxyRuleHostName) {
+		if (tabData.proxyRuleHostName && requestHost === tabData.proxyRuleHostName) {
 			return;
 		}
-
-		Debug.log(`Auto-adding failed request to proxy: ${requestHost} (following ${tabData.proxyRuleHostName})`);
 
 		// Add the rule
 		let result = ProfileRules.enableByHostname(requestHost);
@@ -358,9 +464,9 @@ export class WebFailedRequestMonitor {
 			failedInfo.hasRule = true;
 			failedInfo.ruleId = result.rule.ruleId;
 
-			// If the tab's rule has a specific proxy, apply it to this rule too
-			if (tabData.proxyServerFromRule?.id) {
-				ProfileRules.changeProxyForRule(result.rule.ruleId, tabData.proxyServerFromRule.id);
+			// If the main domain's rule has a specific proxy, apply it to this rule too
+			if (mainDomainRule.compiledRule?.proxyServerId) {
+				ProfileRules.changeProxyForRule(result.rule.ruleId, mainDomainRule.compiledRule.proxyServerId);
 			}
 
 			// Save settings
@@ -479,6 +585,211 @@ export class WebFailedRequestMonitor {
 			});
 		}
 		return isRemoved;
+	}
+
+	/** Handle successful main frame request for new domain connectivity test */
+	private static handleNewDomainConnectivityComplete(requestDetails: any, tabData: TabDataType) {
+		// Check if option is enabled
+		if (!Settings.current.options.testNewDomainConnectivity) {
+			return;
+		}
+
+		// Only process main frame requests
+		if (requestDetails.type !== 'main_frame') {
+			return;
+		}
+
+		// Check if this tab is in testing mode
+		if (tabData.connectivityTestStatus !== TabConnectivityTestStatus.Testing) {
+			return;
+		}
+
+		let requestHost = Utils.extractHostFromUrl(requestDetails.url);
+
+		// Skip internal/local hosts
+		if (!Utils.isNotInternalHostName(requestHost)) {
+			return;
+		}
+
+		Debug.log(`[NewDomainTest] Main frame SUCCESS: ${requestHost} - adding to whitelist`);
+
+		// Mark as direct success
+		tabData.connectivityTestStatus = TabConnectivityTestStatus.DirectSuccess;
+
+		// Get all loaded URLs for this tab
+		let loadedUrls = tabData.getLoadedUrls();
+		let domainsToAdd = new Set<string>();
+
+		// Extract all unique domains from loaded URLs
+		for (let url of loadedUrls) {
+			try {
+				let urlObj = new URL(url);
+				let host = urlObj.hostname;
+				if (Utils.isNotInternalHostName(host)) {
+					domainsToAdd.add(host);
+				}
+			} catch (e) {
+				// Invalid URL, skip
+			}
+		}
+
+		// Also add the main frame domain
+		domainsToAdd.add(requestHost);
+
+		// Add all domains to whitelist
+		let addedCount = 0;
+		for (let domain of domainsToAdd) {
+			let result = ProfileRules.whitelistByHostname(domain, tabData.tabId);
+			if (result?.success) {
+				addedCount++;
+			}
+		}
+
+		if (addedCount > 0) {
+			Debug.log(`[NewDomainTest] Added ${addedCount} domains to whitelist for ${requestHost}`);
+
+			// Save settings
+			SettingsOperation.saveSmartProfiles();
+			SettingsOperation.saveAllSync();
+
+			// Notify proxy engine
+			ProxyEngine.notifyProxyRulesChanged();
+		}
+	}
+
+	/** Handle failed main frame request for new domain connectivity test */
+	private static handleNewDomainConnectivityFailure(requestDetails: any, tabData: TabDataType): boolean {
+		// Check if option is enabled
+		if (!Settings.current.options.testNewDomainConnectivity) {
+			return false;
+		}
+
+		let requestHost = Utils.extractHostFromUrl(requestDetails.url);
+
+		// Skip internal/local hosts
+		if (!Utils.isNotInternalHostName(requestHost)) {
+			return false;
+		}
+
+		// Check if active profile supports adding rules
+		let settingsActive = Settings.active;
+		let activeSmartProfile = settingsActive.activeProfile;
+
+		if (!activeSmartProfile ||
+			!ProfileOperations.profileTypeSupportsRules(activeSmartProfile.profileType) ||
+			!activeSmartProfile.profileTypeConfig?.editable) {
+			return false;
+		}
+
+		// Check if there's already a matching rule for this host
+		let testResult = ProxyRules.findMatchedDomainInRulesInfo(requestHost, activeSmartProfile.compiledRules);
+		if (testResult != null) {
+			return false;
+		}
+
+		// CRITICAL: Check if there's a valid proxy server configured
+		let currentProxyServer = settingsActive.currentProxyServer;
+		if (!currentProxyServer || !currentProxyServer.host || !currentProxyServer.port) {
+			return false;
+		}
+
+		// Mark as proxy needed
+		tabData.connectivityTestStatus = TabConnectivityTestStatus.ProxyNeeded;
+
+		// Get all loaded URLs for this tab
+		let loadedUrls = tabData.getLoadedUrls();
+		let domainsToAdd = new Set<string>();
+
+		// Extract all unique domains from loaded URLs
+		for (let url of loadedUrls) {
+			try {
+				let urlObj = new URL(url);
+				let host = urlObj.hostname;
+				if (Utils.isNotInternalHostName(host)) {
+					domainsToAdd.add(host);
+				}
+			} catch (e) {
+				// Invalid URL, skip
+			}
+		}
+
+		// Also add the main frame domain
+		domainsToAdd.add(requestHost);
+
+		// Add all domains to proxy rules
+		let addedCount = 0;
+		for (let domain of domainsToAdd) {
+			let result = ProfileRules.enableByHostname(domain);
+			if (result?.success) {
+				addedCount++;
+			}
+		}
+
+		if (addedCount > 0) {
+			// Set the proxy rule hostname for the tab so sub-resources can be auto-proxied
+			tabData.proxyRuleHostName = requestHost;
+
+			// Save settings
+			SettingsOperation.saveSmartProfiles();
+			SettingsOperation.saveAllSync();
+
+			// Notify proxy engine to update PAC script
+			ProxyEngine.notifyProxyRulesChanged();
+
+			// Delay refresh to allow PAC script to update
+			// Use tabs.update with the original URL instead of reload
+			// because reload would refresh the error page, not the original URL
+			const tabId = tabData.tabId;
+			const originalUrl = requestDetails.url;
+
+			setTimeout(() => {
+				api.tabs.update(tabId, { url: originalUrl });
+			}, 500);
+
+			return true;
+		}
+		return false;
+	}
+
+	/** Handle main frame request start for new domain connectivity test */
+	private static handleNewDomainConnectivityStart(requestDetails: any, tabData: TabDataType) {
+		// Check if option is enabled
+		const options = Settings.current.options;
+
+		if (!options?.testNewDomainConnectivity) {
+			return;
+		}
+
+		// Only process main frame requests
+		if (requestDetails.type !== 'main_frame') {
+			return;
+		}
+
+		let requestUrl = requestDetails.url;
+		let requestHost = Utils.extractHostFromUrl(requestUrl);
+
+		// Skip internal/local hosts
+		if (!Utils.isNotInternalHostName(requestHost)) {
+			return;
+		}
+
+		// Check if there's already a matching rule for this host
+		let settingsActive = Settings.active;
+		let activeSmartProfile = settingsActive.activeProfile;
+
+		let testResult = ProxyRules.findMatchedDomainInRulesInfo(requestHost, activeSmartProfile.compiledRules);
+
+		if (testResult != null) {
+			// Already has a rule, no need to test
+			tabData.connectivityTestStatus = TabConnectivityTestStatus.None;
+			return;
+		}
+
+		// New domain - mark as testing
+		tabData.connectivityTestStatus = TabConnectivityTestStatus.Testing;
+		tabData.mainFrameDomain = requestHost;
+		tabData.clearLoadedUrls();
+		tabData.addLoadedUrl(requestUrl);
 	}
 
 }

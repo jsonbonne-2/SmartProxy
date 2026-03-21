@@ -1139,3 +1139,166 @@ console.log("Core.ts initializeApp()...");
 // start the application
 Core.initializeApp();
 console.log('Core.ts initializeApp() DONE');
+
+// Global debug helper for Service Worker console
+(globalThis as any).SmartProxyDebug = {
+	getProxyServer: () => {
+		const active = Settings.active;
+		const server = active?.currentProxyServer;
+		if (!server) {
+			return { error: 'No proxy server configured' };
+		}
+		return {
+			name: server.name,
+			host: server.host,
+			port: server.port,
+			protocol: server.protocol,
+			username: server.username || '(none)'
+		};
+	},
+	getActiveProfile: () => {
+		const active = Settings.active;
+		return {
+			name: active?.activeProfile?.profileName,
+			type: active?.activeProfile?.profileType,
+			compiledRulesCount: active?.activeProfile?.compiledRules?.Rules?.length || 0,
+			whitelistRulesCount: active?.activeProfile?.compiledRules?.WhitelistRules?.length || 0
+		};
+	},
+	testConnection: async (host: string, port: number) => {
+		// Simple TCP connection test
+		try {
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 5000);
+			await fetch(`http://${host}:${port}/`, {
+				method: 'HEAD',
+				signal: controller.signal,
+				mode: 'no-cors'
+			});
+			clearTimeout(timeout);
+			return { success: true, message: 'Connection successful (or reached server)' };
+		} catch (e: any) {
+			return { success: false, error: e.message };
+		}
+	},
+	// Check if a domain has a compiled rule
+	hasRule: (domain: string) => {
+		const active = Settings.active;
+		const compiledRules = active?.activeProfile?.compiledRules;
+		if (!compiledRules) {
+			return { error: 'No compiled rules' };
+		}
+
+		// Check all rule arrays
+		const inRules = compiledRules.Rules?.some((r: any) => r.hostName === domain);
+		const inWhitelist = compiledRules.WhitelistRules?.some((r: any) => r.hostName === domain);
+
+		return {
+			domain,
+			inProxyRules: inRules,
+			inWhitelistRules: inWhitelist,
+			totalRules: compiledRules.Rules?.length || 0,
+			totalWhitelist: compiledRules.WhitelistRules?.length || 0
+		};
+	},
+	// Get first 10 rules for debugging
+	listRules: () => {
+		const active = Settings.active;
+		const compiledRules = active?.activeProfile?.compiledRules;
+		return {
+			rules: compiledRules?.Rules?.slice(0, 10).map((r: any) => ({
+				hostName: r.hostName,
+				whiteList: r.whiteList
+			})),
+			total: compiledRules?.Rules?.length || 0
+		};
+	},
+	// Force refresh PAC script
+	refreshPac: () => {
+		ProxyEngine.notifyProxyRulesChanged();
+		return { message: 'PAC script refresh triggered' };
+	},
+	// Get compiled domain maps for debugging
+	getDomainMaps: () => {
+		const active = Settings.active;
+		const compiledRules = active?.activeProfile?.compiledRules;
+		if (!compiledRules) {
+			return { error: 'No compiled rules' };
+		}
+
+		// Collect domains from Rules
+		const domains: string[] = [];
+		for (const rule of (compiledRules.Rules || [])) {
+			if (rule.search) {
+				domains.push(rule.search);
+			}
+		}
+		return {
+			domainsInRules: domains,
+			total: domains.length
+		};
+	},
+	// Check source rules vs compiled rules
+	debugRuleStatus: (domain: string) => {
+		const current = Settings.current;
+		const active = Settings.active;
+
+		// Find source profile
+		const sourceProfile = current.proxyProfiles?.find(p =>
+			p.profileId === current.activeProfileId
+		);
+
+		// Check source rules
+		const sourceRule = sourceProfile?.proxyRules?.find(r => r.hostName === domain);
+
+		// Check compiled rules
+		const compiledRule = active?.activeProfile?.compiledRules?.Rules?.find((r: any) => r.search === domain);
+
+		return {
+			domain,
+			sourceRuleExists: !!sourceRule,
+			sourceRule: sourceRule ? {
+				hostName: sourceRule.hostName,
+				ruleType: sourceRule.ruleType,
+				enabled: sourceRule.enabled,
+				whiteList: sourceRule.whiteList
+			} : null,
+			compiledRuleExists: !!compiledRule,
+			compiledRule: compiledRule ? {
+				search: compiledRule.search,
+				compiledRuleType: compiledRule.compiledRuleType
+			} : null,
+			activeProfileId: current.activeProfileId,
+			activeProfileName: sourceProfile?.profileName
+		};
+	},
+	// Get the PAC proxy string for debugging
+	getPacProxyString: () => {
+		const active = Settings.active;
+		const server = active?.currentProxyServer;
+		if (!server) {
+			return { error: 'No proxy server configured' };
+		}
+
+		// This matches what ProxyEngineChrome.convertActiveProxyServer does
+		const proxyString = `PROXY ${server.host}:${server.port}`;
+		return {
+			proxyString,
+			host: server.host,
+			port: server.port,
+			protocol: server.protocol
+		};
+	},
+	// Disable new domain test feature
+	disableNewDomainTest: () => {
+		Settings.current.options.testNewDomainConnectivity = false;
+		SettingsOperation.saveAllLocal();
+		return { message: 'New domain test feature disabled' };
+	},
+	// Enable new domain test feature
+	enableNewDomainTest: () => {
+		Settings.current.options.testNewDomainConnectivity = true;
+		SettingsOperation.saveAllLocal();
+		return { message: 'New domain test feature enabled' };
+	}
+};
