@@ -73,6 +73,9 @@ const exactUrlMap = ${optimizedData.exactUrlMap};
 const domainPathMap = ${optimizedData.domainPathMap};
 // Subdomain suffix map for O(k) subdomain matching
 const subdomainSuffixMap = ${optimizedData.subdomainSuffixMap};
+// Negative cache: domains with no matching rules (skip slow path)
+const negativeCache = {};
+const negativeCacheLimit = 1000;
 
 const compiledRules = {
 	/** User defined whitelist rules. P2 - only regex rules now */
@@ -105,7 +108,8 @@ const activeProfileType = +'${profileType}';
 const currentProxyServer = "${resultCurrentProxyServer}";
 const resultDirect = "DIRECT";
 const resultSystem = "SYSTEM";
-const verboseDiagnostics = ${(DiagDebug?.enabled == true)}; // set to true for verbose logs using chrome flag. https://support.google.com/chrome/a/answer/6271171?hl=en#zippy=%2Cview-network-data%2Cget-network-logs
+const verboseDiagnostics = ${(DiagDebug?.enabled == true)};
+
 // -------------------------
 // required PAC function that will be called to determine
 // if a proxy should be used.
@@ -168,6 +172,9 @@ function FindProxyForURL(url, host, noDiagnostics) {
 			if (subdomainSuffixMap[suffix]) return currentProxyServer;
 		}
 	}
+
+	// NEGATIVE CACHE: Skip slow path for known no-match domains
+	if (negativeCache[host]) return resultDirect;
 
 	if (activeProfileType == SmartProfileType.AlwaysEnabledBypassRules) {
 
@@ -232,6 +239,11 @@ function FindProxyForURL(url, host, noDiagnostics) {
 		let subMatchedRule = findMatchedUrlInRules(url, host, hostAndPort, compiledRules.SubscriptionRules);
 		if (subMatchedRule) {
 			return makeResultForMatchedRule(subMatchedRule);
+		}
+
+		// No rules matched - add to negative cache for future requests
+		if (Object.keys(negativeCache).length < negativeCacheLimit) {
+			negativeCache[host] = true;
 		}
 
 		/**
