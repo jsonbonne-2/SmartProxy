@@ -423,6 +423,8 @@ export class WebFailedRequestMonitor {
 		let activeSmartProfile = settingsActive.activeProfile;
 		let mainDomainRule = null;
 
+		Debug.log(`[AutoProxy] host=${requestHost}, proxyRuleHostName=${tabData.proxyRuleHostName}, tabUrl=${tabData.url}`);
+
 		// If tab has a proxy rule hostname, check if it has a rule
 		if (tabData.proxyRuleHostName) {
 			mainDomainRule = ProxyRules.findMatchedDomainInRulesInfo(tabData.proxyRuleHostName, activeSmartProfile.compiledRules);
@@ -431,19 +433,28 @@ export class WebFailedRequestMonitor {
 			let mainHost = Utils.extractHostFromUrl(tabData.url);
 			if (mainHost) {
 				mainDomainRule = ProxyRules.findMatchedDomainInRulesInfo(mainHost, activeSmartProfile.compiledRules);
+				Debug.log(`[AutoProxy] mainHost=${mainHost}, mainDomainRule=${mainDomainRule?.matchedRuleSource}`);
+				// Cache the proxy rule hostname for future use
+				if (mainDomainRule && mainDomainRule.matchedRuleSource !== CompiledProxyRulesMatchedSource.WhitelistRules &&
+					mainDomainRule.matchedRuleSource !== CompiledProxyRulesMatchedSource.WhitelistSubscriptionRules) {
+					tabData.proxyRuleHostName = mainHost;
+				}
 			}
 		}
 
 		// Only auto-add if main domain has a proxy rule (not whitelist)
 		if (!mainDomainRule || mainDomainRule.matchedRuleSource === CompiledProxyRulesMatchedSource.WhitelistRules ||
 			mainDomainRule.matchedRuleSource === CompiledProxyRulesMatchedSource.WhitelistSubscriptionRules) {
+			Debug.log(`[AutoProxy] Skipping ${requestHost} - main domain has no proxy rule`);
 			return;
 		}
 
 		// Skip if already has a precise rule for this host or is ignored
 		// Note: hasRule may be true even if the rule is for a parent domain (wildcard/subdomain matching)
 		// We only skip if the rule is specifically for this host (isRuleForThisHost=true)
+		Debug.log(`[AutoProxy] hasRule=${failedInfo.hasRule}, isRuleForThisHost=${failedInfo.isRuleForThisHost}, ignored=${failedInfo.ignored}`);
 		if ((failedInfo.hasRule && failedInfo.isRuleForThisHost === true) || failedInfo.ignored) {
+			Debug.log(`[AutoProxy] Skipping ${requestHost} - has precise rule or ignored`);
 			return;
 		}
 
@@ -753,13 +764,6 @@ export class WebFailedRequestMonitor {
 
 	/** Handle main frame request start for new domain connectivity test */
 	private static handleNewDomainConnectivityStart(requestDetails: any, tabData: TabDataType) {
-		// Check if option is enabled
-		const options = Settings.current.options;
-
-		if (!options?.testNewDomainConnectivity) {
-			return;
-		}
-
 		// Only process main frame requests
 		if (requestDetails.type !== 'main_frame') {
 			return;
@@ -779,9 +783,24 @@ export class WebFailedRequestMonitor {
 
 		let testResult = ProxyRules.findMatchedDomainInRulesInfo(requestHost, activeSmartProfile.compiledRules);
 
+		Debug.log(`[MainFrame] host=${requestHost}, hasRule=${testResult != null}, source=${testResult?.matchedRuleSource}`);
+
 		if (testResult != null) {
-			// Already has a rule, no need to test
+			// Already has a rule - check if it's a proxy rule (not whitelist)
+			if (testResult.matchedRuleSource !== CompiledProxyRulesMatchedSource.WhitelistRules &&
+				testResult.matchedRuleSource !== CompiledProxyRulesMatchedSource.WhitelistSubscriptionRules) {
+				// Set proxy rule hostname for sub-resources auto-proxy
+				tabData.proxyRuleHostName = testResult.compiledRule.hostName || requestHost;
+				Debug.log(`[MainFrame] Set proxyRuleHostName=${tabData.proxyRuleHostName}`);
+			}
+			// No need to test connectivity
 			tabData.connectivityTestStatus = TabConnectivityTestStatus.None;
+			return;
+		}
+
+		// Check if option is enabled for new domain connectivity test
+		const options = Settings.current.options;
+		if (!options?.testNewDomainConnectivity) {
 			return;
 		}
 
